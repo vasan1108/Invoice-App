@@ -1,0 +1,5 @@
+# Real invoices and spreadsheets stay off GitHub
+*.xlsx
+*.xls
+*.csv
+*.pdf
