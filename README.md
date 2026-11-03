@@ -1,12 +1,15 @@
 # GST Invoice Generator
 
-A private invoicing app for one person on one computer. It creates GST Tax Invoices and saves them as PDF or Excel. There is no login and no online storage: invoices stay in the browser on this computer.
+A private invoicing app for one person on one computer. It creates GST Tax Invoices and saves them as PDF or Excel. There is no login and no online storage: invoices are saved in MongoDB on this computer, with a working copy in the browser.
 
 ## Files
 
 | File | Purpose |
 |---|---|
 | `invoice-app.html` | The whole app: pages, styling and logic |
+| `server.js` | Small Node.js server that opens the app and saves its data in MongoDB |
+| `package.json` | Lists the MongoDB driver the server needs |
+| `.env.example` | Example settings: MongoDB address, database name and port |
 | `sw.js` | Service worker that lets the app open offline once it has been loaded from the server |
 | `manifest.webmanifest` | Name, colours and icons used when the app is installed |
 | `icon-192.png`, `icon-512.png` | App icons |
@@ -15,15 +18,31 @@ A private invoicing app for one person on one computer. It creates GST Tax Invoi
 
 ## Start the app
 
-Run this in PowerShell and keep the window open:
+Needs Node.js 20.19 or later and MongoDB Server running on this computer (installed as the Windows service "MongoDB").
+
+The first time only, install the MongoDB driver:
 
 ```powershell
-python -m http.server 8081 --bind 127.0.0.1 --directory "C:\Users\DELL\Desktop\invoice-app"
+cd "C:\Users\DELL\Desktop\IYYANAR ANNA\invoice-app"
+npm install
 ```
 
-Then open <http://127.0.0.1:8081/invoice-app.html>. Close the window when finished; invoices stay saved.
+Then, each time, run this in PowerShell and keep the window open:
 
-Always use the same browser and this exact address. The browser stores invoices separately for each address, so `localhost` or another port opens an empty app. If the folder moves, update the path in the command.
+```powershell
+cd "C:\Users\DELL\Desktop\IYYANAR ANNA\invoice-app"
+npm start
+```
+
+It prints `Connected to MongoDB` when ready. Open <http://127.0.0.1:8081/invoice-app.html>. Press Ctrl+C or close the window when finished; invoices stay saved.
+
+Use this exact address. The browser keeps its working copy separately for each address.
+
+If the server says it cannot connect, start the MongoDB service (Windows Services, "MongoDB") and try again.
+
+### Settings
+
+The server uses local MongoDB at `mongodb://127.0.0.1:27017`, database `gst_invoice`, port 8081. To change them, copy `.env.example` to `.env` and edit it. For MongoDB Atlas, put its `mongodb+srv://` connection string in `MONGODB_URI`. Keep `.env` private: it can contain the database password, and it is kept off GitHub.
 
 ## First-time setup
 
@@ -59,25 +78,32 @@ Always use the same browser and this exact address. The browser stores invoices 
 
 ## Where the data is stored
 
-Data is in the browser's `localStorage`, not in this folder:
+The master copy is in MongoDB, database `gst_invoice`. Open it in MongoDB Compass with `mongodb://127.0.0.1:27017`.
 
-| Key | Contents |
-|---|---|
-| `gst.invoices` | Saved invoices |
-| `gst.clients` | Saved client profiles |
-| `gst.businesses` | Saved business profiles, including bank details |
-| `gst.settings` | Defaults, theme, added years and the selected year |
-| `gst.wip` | The invoice currently being edited but not saved |
+| MongoDB collection | Browser key | Contents |
+|---|---|---|
+| `invoices` | `gst.invoices` | Saved invoices, one document each |
+| `clients` | `gst.clients` | Saved client profiles |
+| `businesses` | `gst.businesses` | Saved business profiles, including bank details |
+| `settings` | `gst.settings` | One document: defaults, theme, added years and the selected year |
+| (not saved) | `gst.wip` | The invoice currently being edited but not saved |
+| (not saved) | `gst.unsynced` | Changes not yet saved in MongoDB |
 
-**Clearing browser data for this site can permanently delete all of it.** Copying this folder does not back up invoices.
+How saving works:
+- Every change is saved in the browser and sent to MongoDB straight away.
+- The badge at the top shows **MongoDB ✓** when everything is saved in MongoDB. **MongoDB ✕** means the server or MongoDB is not reachable. Changes are then kept in the browser and sent on the next change, reload, or when you return to the window.
+- When the app opens, it loads everything from MongoDB, so clearing browser data no longer loses invoices.
+- The first time the app connects, invoices already in the browser are copied into MongoDB.
+- Edit data in Compass only while the app is closed, then reload the app. The app's next save replaces the whole collection with its own copy.
+- Deleting every invoice in Compass does not clear the app: an empty collection is filled again from the browser copy.
 
 ## Backup
 
-The app has no backup or restore feature yet.
+MongoDB keeps the invoices on this computer's disk, so a disk failure still loses them. Back them up regularly to a USB drive, OneDrive or Google Drive:
+- In Compass, open each collection and use **Export Data** to save it as JSON.
+- Or use `mongodump --db gst_invoice` from the MongoDB Database Tools, and `mongorestore` to load it back.
 
-For now, save a PDF of every invoice to a folder that is also copied to a USB drive, OneDrive or Google Drive. The app cannot load those files back in. If browser data is lost, the invoices disappear from the app and the next number has to be typed by hand.
-
-The planned solution is automatic saving to a chosen local folder, Backup and Restore buttons, and a regular copy to a USB drive.
+Saving a PDF of every invoice is still a good extra copy.
 
 ## Known issues
 
@@ -89,4 +115,5 @@ The planned solution is automatic saving to a chosen local folder, Backup and Re
 - **Year changeover:** a year clicked on the Invoices page stays selected after 1 April until another is chosen.
 - **Invoice numbers:** nothing enforces the 16-character GST limit. A number without a year at the end appears only under **All**.
 - **GSTIN check:** only the general format is checked, not whether the code matches the state.
-- **Offline copy:** opening another page in this folder through the server could replace the saved offline copy of the app.
+- **Offline copy:** opening another page through the server could replace the saved offline copy of the app.
+- **Saving to MongoDB:** each save sends the whole list of invoices, which is fine for thousands of invoices but slower for very large numbers.
