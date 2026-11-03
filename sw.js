@@ -1,4 +1,4 @@
-const CACHE = 'gst-invoice-v6';
+const CACHE = 'gst-invoice-v8';
 const PAGE = './invoice-app.html';
 const SHELL = [PAGE, './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 

@@ -782,107 +782,250 @@ function downloadPDF() {
   window.print();
 }
 
-/* ---------- Excel (SpreadsheetML) ---------- */
+/* ---------- Excel (.xlsx) ---------- */
 const xml = s => String(s == null ? '' : s).replace(/[^\x09\x0A\x0D\x20-�]/g, '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c])).replace(/\n/g, '&#10;');
-function xlCell(value, style, merge) {
-  const type = typeof value === 'number' ? 'Number' : 'String';
-  return '<Cell' + (style ? ' ss:StyleID="' + style + '"' : '') + (merge ? ' ss:MergeAcross="' + merge + '"' : '') + '><Data ss:Type="' + type + '">' + xml(value) + '</Data></Cell>';
-}
-const xlRow = (...cells) => '<Row>' + cells.join('') + '</Row>';
-const xlWide = (value, style) => xlRow(xlCell(value, style || 'wrap', 5));
+// Layout copied from the business's own Excel invoice: medium box borders, Calibri.
+// Its wide Particulars column is split into B and C so the bank labels and their colons line up.
+const XL_COLS = [34, 100, 179, 65, 80, 80, 114.5];
+// Excel shrinks the 652.5pt of columns to fit A4 between 0.4in margins; measured in Excel, a page then holds about 880pt of rows.
+const XL_PAGE_HEIGHT = 860;
+const XL_ITEM_HEIGHT = 24;
+// Rough text width for row heights, since Excel does not grow merged or fixed-height rows by itself.
+const xlLines = (text, width, size) => String(text || '').split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(l.length * size * 0.52 / width)), 0);
+const xlWidth = (from, span) => XL_COLS.slice(from, from + span).reduce((a, b) => a + b, 0);
 function buildExcel(inv) {
   const c = calc(inv), s = inv.seller, b = inv.client, k = inv.bank;
   const rows = [];
-  const add = r => rows.push(r);
-  // Excel does not auto-size merged cells, so tall values get an explicit row height.
-  const countLines = (v, perLine) => String(v).split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(l.length / perLine)), 0);
-  const tallRow = (lines, cells) => '<Row ss:AutoFitHeight="0" ss:Height="' + lines * 15 + '">' + cells + '</Row>';
-  const pair = (label, v) => { if (v) add(tallRow(countLines(label + ' : ' + v, 100), xlCell(label + ' : ' + v, 'wrap', 5))); };
-  const fromLine = v => { if (v) add(tallRow(countLines(v, 110), xlCell(v, 'fromLine', 5))); };
+  let used = 0;
+  // Adds a block of rows and draws its outer box. A row is { h, cells }; a cell is { v, rich, span, down, at, o }:
+  // span columns wide, down extra rows tall, at = 1-based column after a gap, rich = [[text, bold], ...],
+  // o = { size, bold, h, v, wrap, fmt, b } where b lists the bordered sides, e.g. 'LTRB'.
+  function box(block) {
+    block.forEach((row, r) => {
+      row.cells.forEach((cell, i) => {
+        cell.o = Object.assign({}, cell.o);
+        cell.o.b = (cell.o.b || '') + (i === 0 && !cell.at ? 'L' : '') + (i === row.cells.length - 1 ? 'R' : '') + (r === 0 ? 'T' : '') + (r === block.length - 1 ? 'B' : '');
+      });
+      used += row.h;
+      rows.push(row);
+    });
+  }
 
-  // From area: same arrangement as the printed invoice.
+  // Seller: centred between a blank column A and the phone numbers in column G.
+  const head = [{ v: 'TAX INVOICE', size: 12, bold: true, h: 21.5 }, { v: s.name, size: 20, bold: true, h: 30.5 }];
+  (s.address || '').split('\n').filter(l => l.trim()).forEach(l => head.push({ v: l.trim(), size: 12 }));
+  if (s.email) head.push({ v: 'Email : ' + s.email, size: 12 });
+  if (s.gstin) head.push({ v: 'GSTIN : ' + s.gstin.toUpperCase(), size: 12, bold: true });
+  const home = splitState(s.state);
+  if (s.state) head.push({ v: home.name + (home.code ? ' , Code : ' + home.code : ''), size: 12 });
   const phones = phoneList(s.phone).map(n => 'CELL : ' + n);
-  add(xlRow(xlCell('TAX INVOICE', 'fromTitle', 4), xlCell(phones[0] || '', 'fromCell')));
-  phones.slice(1).forEach(p => add(xlRow(xlCell('', 'fromSide', 4), xlCell(p, 'fromCellSide'))));
-  add(tallRow(1.6, xlCell(s.name, 'fromName', 5)));
-  fromLine(s.address);
-  fromLine(s.email && 'Email : ' + s.email);
-  fromLine(s.gstin && 'GSTIN : ' + s.gstin.toUpperCase());
-  add(xlRow(xlCell(s.state ? stateLine(s.state) : '', 'fromLast', 5)));
+  while (head.length < phones.length) head.push({ v: '', size: 12 });
+  box(head.map((line, i) => ({
+    h: line.h || Math.max(20, xlLines(line.v, xlWidth(1, 5), line.size) * 16),
+    cells: [{}, { v: line.v, span: 5, o: { size: line.size, bold: line.bold, h: 'Center', wrap: true } }, { v: phones[i] || '', o: { v: 'Top' } }]
+  })));
 
-  // To area: client on the left, invoice references on the right.
-  const left = [['To.', 'toLeft'], [b.name, 'toName']];
-  (b.address || '').split('\n').filter(l => l.trim()).forEach(l => left.push([l, 'toLeft']));
-  if (b.phone) left.push(['Cell : ' + b.phone, 'toLeft']);
-  if (b.email) left.push(['Email : ' + b.email, 'toLeft']);
-  if (b.gstin) left.push(['GSTIN : ' + b.gstin.toUpperCase(), 'toLeft']);
+  // Client on the left, invoice references on the right, as on the printed form.
+  const left = [];
+  (b.address || '').split('\n').filter(l => l.trim()).forEach(l => left.push(l.trim()));
+  if (b.phone) left.push('Cell : ' + b.phone);
+  if (b.email) left.push('Email : ' + b.email);
+  if (b.gstin) left.push('GSTIN : ' + b.gstin.toUpperCase());
   const place = splitState(inv.state);
-  const refs = [['', ''], ['INVOICE NO : ' + inv.number, 'DATE : ' + fmtDate(inv.date)]];
-  refs.push(['D.C REF NO : ' + (inv.dcNo || ''), 'DATE : ' + fmtDate(inv.dcDate)], ['P.O REF NO : ' + (inv.poNo || ''), 'DATE : ' + fmtDate(inv.poDate)], ['State : ' + place.name, 'Code : ' + place.code]);
-  for (let i = 0; i < Math.max(left.length, refs.length); i++) {
-    const [text, style] = left[i] || ['', 'toLeft'];
-    const [ref, date] = refs[i] || ['', ''];
-    add(tallRow(countLines(text, 50), xlCell(text, style, 1) + xlCell(ref, 'toRef', 2) + xlCell(date, 'toDate')));
+  const refs = [['INVOICE NO : ' + inv.number, 'DATE : ' + fmtDate(inv.date)], null, ['D.C REF NO : ' + (inv.dcNo || ''), 'DATE : ' + fmtDate(inv.dcDate)], null, ['P.O REF NO : ' + (inv.poNo || ''), 'DATE : ' + fmtDate(inv.poDate)]];
+  const count = Math.max(9, left.length + 4);
+  const client = [];
+  for (let r = 0; r < count; r++) {
+    const ref = r === count - 1 ? ['State : ' + place.name, 'Code : ' + place.code] : refs[r - 1];
+    const line = r >= 3 ? left[r - 3] || '' : '';
+    // Each reference sits on a ruled line; the last row closes the box.
+    const rule = ref && r < count - 1 ? 'B' : '';
+    const cells = [{ v: r === 0 ? 'To.' : '', o: { h: 'Center', v: 'Bottom' } }];
+    if (r === 1) cells.push({ v: b.name, span: 2, down: 1, o: { size: 14, bold: true, wrap: true, b: 'R' } });
+    else if (r !== 2) cells.push({ v: line, span: 2, o: { wrap: true, v: 'Bottom', b: 'R' } });
+    cells.push({ v: ref ? ref[0] : '', span: 3, at: r === 2 ? 4 : 0, o: { v: 'Bottom', b: 'L' + rule } }, { v: ref ? ref[1] : '', o: { v: 'Bottom', b: rule } });
+    client.push({ h: Math.max(14.5, xlLines(line, xlWidth(1, 2), 11) * 14.5), cells });
   }
-  add(xlRow(...['SI', 'Particulars', 'HSN / SAC', 'Qty', 'Rate', 'Amount'].map(h => xlCell(h, 'head'))));
-  inv.items.forEach((it, i) => add(xlRow(xlCell(i + 1, 'box'), xlCell(it.desc, 'box'), xlCell(String(it.hsn || ''), 'box'), xlCell(num(it.qty), 'box'), xlCell(num(it.rate), 'money'), xlCell(c.lines[i], 'money'))));
-  totalRows(inv, c).forEach(([l, v]) => add(xlRow(xlCell(l, 'totalLabel', 4), xlCell(v, 'money'))));
-  add(xlRow(xlCell('GRAND TOTAL', 'grandLabel', 4), xlCell(c.grand, 'grand')));
-  add(xlRow());
-  pair('Amount in words', amountWords(c.grand));
-  add(xlRow());
-  add(xlWide('Bank Details', 'section'));
-  pair('Company Name', k.company || s.name); pair('Bank Name', k.name); pair('Branch', k.branch); pair('Account No', k.account); pair('IFSC Code', (k.ifsc || '').toUpperCase());
-  if (inv.notes && inv.notes.trim()) { add(xlRow()); pair('Notes / Terms', inv.notes); }
-  const sides = (...list) => '<Borders>' + list.map(p => '<Border ss:Position="' + p + '" ss:LineStyle="Continuous" ss:Weight="1"/>').join('') + '</Borders>';
-  const border = sides('Left', 'Right', 'Top', 'Bottom');
-  const centre = '<Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/>';
-  const style = (id, inner) => '<Style ss:ID="' + id + '">' + inner + '</Style>';
-  const moneyFmt = '<NumberFormat ss:Format="#,##0.00"/>';
-  return '<?xml version="1.0" encoding="UTF-8"?>\n<?mso-application progid="Excel.Sheet"?>\n' +
-    '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Styles>' +
-    style('fromTitle', centre + sides('Left', 'Top') + '<Font ss:Bold="1" ss:Size="12"/>') +
-    style('fromCell', sides('Right', 'Top')) +
-    style('fromSide', sides('Left')) +
-    style('fromCellSide', sides('Right')) +
-    style('fromName', centre + sides('Left', 'Right') + '<Font ss:Bold="1" ss:Size="16"/>') +
-    style('fromLine', centre + sides('Left', 'Right')) +
-    style('fromLast', centre + sides('Left', 'Right', 'Bottom')) +
-    style('toLeft', '<Alignment ss:Vertical="Top" ss:WrapText="1"/>' + sides('Left', 'Right')) +
-    style('toName', '<Alignment ss:Vertical="Top" ss:WrapText="1"/>' + sides('Left', 'Right') + '<Font ss:Bold="1" ss:Size="12"/>') +
-    style('toRef', '<Alignment ss:Vertical="Top"/>') +
-    style('toDate', '<Alignment ss:Vertical="Top"/>' + sides('Right')) +
-    style('section', '<Font ss:Bold="1"/><Interior ss:Color="#E9E9E9" ss:Pattern="Solid"/>') +
-    style('wrap', '<Alignment ss:Vertical="Top" ss:WrapText="1"/>') +
-    style('head', '<Alignment ss:Horizontal="Center"/>' + border + '<Font ss:Bold="1"/><Interior ss:Color="#E9E9E9" ss:Pattern="Solid"/>') +
-    style('box', '<Alignment ss:Vertical="Top" ss:WrapText="1"/>' + border) +
-    style('money', '<Alignment ss:Horizontal="Right" ss:Vertical="Top"/>' + border + moneyFmt) +
-    style('totalLabel', '<Alignment ss:Horizontal="Right"/>' + border) +
-    style('grandLabel', '<Alignment ss:Horizontal="Right"/>' + border + '<Font ss:Bold="1"/>') +
-    style('grand', '<Alignment ss:Horizontal="Right"/>' + border + '<Font ss:Bold="1"/>' + moneyFmt) +
-    '</Styles><Worksheet ss:Name="Tax Invoice"><Table>' +
-    [35, 235, 70, 55, 75, 115].map(w => '<Column ss:Width="' + w + '"/>').join('') +
-    rows.join('') + '</Table></Worksheet></Workbook>';
+  box(client);
+
+  // Items: the empty rows stretch the table so a short invoice fills the A4 page.
+  const heading = ['SI\nNO', 'PARTICULARS', 'HSN/SAC', 'Quantity', 'Rate (Rs.)', 'AMOUNTS (Rs)'];
+  box([{ h: 42.5, cells: heading.map((v, i) => ({ v, span: i === 1 ? 2 : 1, o: { size: 12, bold: i === 1, h: 'Center', wrap: true, b: 'LR' } })) }]);
+  const cols = [{ h: 'Center' }, { wrap: true }, { h: 'Center' }, { h: 'Center' }, { h: 'Center', fmt: '#,##0.00' }, { h: 'Right', bold: true, fmt: '#,##0.00' }];
+  const itemRow = values => ({
+    h: Math.max(XL_ITEM_HEIGHT, xlLines(values[1], xlWidth(1, 2), 12) * 16),
+    cells: values.map((v, i) => ({ v, span: i === 1 ? 2 : 1, o: Object.assign({ size: 12, b: 'LR' }, cols[i]) }))
+  });
+  const items = inv.items.map((it, i) => itemRow([i + 1, it.desc, String(it.hsn || ''), num(it.qty), num(it.rate), c.lines[i]]));
+
+  // Bank details beside the totals, which always list CGST, SGST and IGST like the printed form.
+  const sums = totalRows(inv, c).map(([l, v]) => [l === 'Total' ? 'TOTAL' : l === 'Round off' ? 'Rounded off' : l, v]);
+  const sgst = sums.findIndex(([l]) => l.startsWith('SGST'));
+  if (inv.gstType === 'intra') sums.splice(sgst + 1, 0, ['IGST', null]);
+  if (inv.gstType === 'inter') sums.splice(sums.findIndex(([l]) => l.startsWith('IGST')), 0, ['CGST', null], ['SGST', null]);
+  sums.push(['GRAND TOTAL', c.grand]);
+  const bank = [['COMPANY NAME', k.company || s.name], ['BANK NAME', k.name], ['BRANCH', k.branch], ['A/C NO', k.account], ['IFSC CODE', (k.ifsc || '').toUpperCase()]];
+  const totals = [];
+  for (let r = 0; r < Math.max(6, sums.length); r++) {
+    const sum = sums[sums.length - Math.max(6, sums.length) + r];
+    const strong = sum && (sum[0] === 'TOTAL' || sum[0] === 'GRAND TOTAL');
+    const cells = r === 0
+      ? [{ v: 'BANK DETAILS', span: 4, o: { size: 12, bold: true, h: 'Center' } }]
+      : [{}, { v: bank[r - 1] && bank[r - 1][1] ? bank[r - 1][0] : '', o: { size: 12 } }, { v: bank[r - 1] && bank[r - 1][1] ? ': ' + bank[r - 1][1] : '', span: 2, o: { size: 12, b: 'R' } }];
+    cells.push({ v: sum ? sum[0] : '', span: 2, o: { size: 14, bold: strong, h: 'Center', b: 'LTB' } },
+      { v: sum ? sum[1] : '', o: { size: 14, bold: true, h: 'Right', fmt: '"Rs. "#,##0.00', b: 'TB' } });
+    totals.push({ h: 21.5, cells });
+  }
+
+  const words = [{ h: 22.5, cells: [{ v: 'Amount chargeable (in words) :', span: 7 }] },
+    { h: Math.max(20, xlLines(amountWords(c.grand), xlWidth(0, 7), 12) * 16), cells: [{ v: amountWords(c.grand), span: 7, o: { size: 12, bold: true, wrap: true } }] }];
+  const notes = inv.notes && inv.notes.trim()
+    ? [{ h: 18, cells: [{ v: 'Notes / Terms :', span: 7, o: { bold: true } }] }].concat(inv.notes.trim().split('\n').map(l => ({ h: Math.max(15, xlLines(l, xlWidth(0, 7), 11) * 15), cells: [{ v: l, span: 7, o: { wrap: true } }] })))
+    : [];
+  // Room for a seal and signature between "For ..." and "Authorised signatory".
+  const sign = [{ h: 18.5, cells: [{ span: 4 }, { rich: [['For ', false], [s.name, true]], span: 3, o: { h: 'Center' } }] },
+    { h: 20, cells: [{ span: 7 }] }, { h: 20, cells: [{ span: 7 }] }, { h: 20, cells: [{ span: 7 }] },
+    { h: 15.5, cells: [{ span: 4 }, { v: 'Authorised signatory', span: 3, o: { h: 'Center' } }] }];
+
+  const fixed = [totals, words, notes, sign].reduce((h, block) => h + block.reduce((a, r) => a + r.h, 0), 0) + items.reduce((a, r) => a + r.h, 0);
+  const spare = XL_PAGE_HEIGHT - used - fixed;
+  // A long invoice runs onto more pages and gets no empty rows.
+  const filler = spare > 0 ? Math.floor(spare / XL_ITEM_HEIGHT) : 0;
+  for (let i = 0; i < filler; i++) items.push(itemRow(['', '', '', '', '', '']));
+  box(items);
+  box(totals);
+  box(words);
+  if (notes.length) box(notes);
+  box(sign);
+
+  return xlsxFile(rows);
 }
-async function downloadExcel() {
-  const inv = currentInvoice();
-  const blob = new Blob([buildExcel(inv)], { type: 'application/vnd.ms-excel' });
-  // Chrome and Edge can ask where to save; other browsers use their normal download.
-  if (window.showSaveFilePicker) {
-    try {
-      const handle = await window.showSaveFilePicker({ suggestedName: fileBase(inv) + '.xls', types: [{ description: 'Excel Workbook', accept: { 'application/vnd.ms-excel': ['.xls'] } }] });
-      const writer = await handle.createWritable();
-      await writer.write(blob);
-      await writer.close();
-      toast('Saved ' + handle.name);
-    } catch (e) {
-      if (e.name !== 'AbortError') toast('Could not save the file.');
-    }
-    return;
+// Writes the rows from buildExcel as an Excel workbook: one sheet, A4, centred, fitted to one page wide.
+function xlsxFile(rows) {
+  const fonts = ['<font><sz val="11"/><name val="Calibri"/><family val="2"/></font>'];
+  const borders = ['<border><left/><right/><top/><bottom/><diagonal/></border>'];
+  const xfs = ['<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'];
+  const formats = []; // custom number formats, numbered from 164
+  const indexOf = (list, item) => { if (!list.includes(item)) list.push(item); return list.indexOf(item); };
+  function styleIndex(o) {
+    const font = indexOf(fonts, '<font>' + (o.bold ? '<b/>' : '') + '<sz val="' + (o.size || 11) + '"/><name val="Calibri"/><family val="2"/></font>');
+    const side = (name, on) => (on ? '<' + name + ' style="medium"><color indexed="64"/></' + name + '>' : '<' + name + '/>');
+    const b = o.b || '';
+    const border = indexOf(borders, '<border>' + side('left', b.includes('L')) + side('right', b.includes('R')) + side('top', b.includes('T')) + side('bottom', b.includes('B')) + '<diagonal/></border>');
+    const fmt = !o.fmt ? 0 : o.fmt === '#,##0.00' ? 4 : 164 + indexOf(formats, o.fmt);
+    return indexOf(xfs, '<xf numFmtId="' + fmt + '" fontId="' + font + '" fillId="0" borderId="' + border + '" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1" applyAlignment="1">' +
+      '<alignment horizontal="' + (o.h || 'Left').toLowerCase() + '" vertical="' + (o.v || 'Center').toLowerCase() + '"' + (o.wrap ? ' wrapText="1"' : '') + '/></xf>');
   }
-  const url = URL.createObjectURL(blob);
+  const ref = (r, c) => 'ABCDEFG'[c] + (r + 1);
+  // Every cell a merge covers gets the same style, so the merged area shows its borders.
+  const grid = rows.map(() => []);
+  const merges = [];
+  rows.forEach((row, r) => {
+    let col = 0;
+    row.cells.forEach(cell => {
+      if (cell.at) col = cell.at - 1;
+      while (grid[r][col]) col++;
+      const span = cell.span || 1, down = cell.down || 0, style = styleIndex(cell.o || {});
+      for (let dr = 0; dr <= down; dr++) for (let dc = 0; dc < span; dc++) grid[r + dr][col + dc] = { style };
+      grid[r][col] = { style, cell };
+      if (span > 1 || down) merges.push(ref(r, col) + ':' + ref(r + down, col + span - 1));
+      col += span;
+    });
+  });
+  const text = t => '<t xml:space="preserve">' + xml(t) + '</t>';
+  function cellXml(r, c, g) {
+    const head = '<c r="' + ref(r, c) + '" s="' + g.style + '"';
+    const cell = g.cell || {};
+    if (cell.rich) return head + ' t="inlineStr"><is>' + cell.rich.map(([t, bold]) => '<r><rPr>' + (bold ? '<b/>' : '') + '<sz val="' + ((cell.o && cell.o.size) || 11) + '"/><rFont val="Calibri"/><family val="2"/></rPr>' + text(t) + '</r>').join('') + '</is></c>';
+    if (typeof cell.v === 'number') return head + '><v>' + cell.v + '</v></c>';
+    if (cell.v != null && cell.v !== '') return head + ' t="inlineStr"><is>' + text(cell.v) + '</is></c>';
+    return head + '/>';
+  }
+  // Excel column widths are in characters of the default font (7px each, plus 5px padding).
+  const colWidth = pt => Math.floor((pt * 4 / 3 - 5) / 7 * 100 + 0.5) / 100;
+  const XML_HEAD = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
+  const MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+  const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+  const PKG = 'http://schemas.openxmlformats.org/package/2006/relationships';
+  const sheet = XML_HEAD + '<worksheet xmlns="' + MAIN + '" xmlns:r="' + REL + '">' +
+    '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><sheetViews><sheetView showGridLines="0" workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"/>' +
+    '<cols>' + XL_COLS.map((w, i) => '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + colWidth(w) + '" customWidth="1"/>').join('') + '</cols>' +
+    '<sheetData>' + rows.map((row, r) => '<row r="' + (r + 1) + '" ht="' + row.h + '" customHeight="1">' + grid[r].map((g, c) => (g ? cellXml(r, c, g) : '')).join('') + '</row>').join('') + '</sheetData>' +
+    (merges.length ? '<mergeCells count="' + merges.length + '">' + merges.map(m => '<mergeCell ref="' + m + '"/>').join('') + '</mergeCells>' : '') +
+    '<printOptions horizontalCentered="1"/><pageMargins left="0.4" right="0.4" top="0.4" bottom="0.4" header="0.2" footer="0.2"/>' +
+    '<pageSetup paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="0"/></worksheet>';
+  const styles = XML_HEAD + '<styleSheet xmlns="' + MAIN + '">' +
+    (formats.length ? '<numFmts count="' + formats.length + '">' + formats.map((f, i) => '<numFmt numFmtId="' + (164 + i) + '" formatCode="' + xml(f) + '"/>').join('') + '</numFmts>' : '') +
+    '<fonts count="' + fonts.length + '">' + fonts.join('') + '</fonts>' +
+    '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>' +
+    '<borders count="' + borders.length + '">' + borders.join('') + '</borders>' +
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+    '<cellXfs count="' + xfs.length + '">' + xfs.join('') + '</cellXfs>' +
+    '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+  const OOXML = 'application/vnd.openxmlformats-officedocument.spreadsheetml.';
+  return zipFiles([
+    ['[Content_Types].xml', XML_HEAD + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>' +
+      '<Override PartName="/xl/workbook.xml" ContentType="' + OOXML + 'sheet.main+xml"/>' +
+      '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="' + OOXML + 'worksheet+xml"/>' +
+      '<Override PartName="/xl/styles.xml" ContentType="' + OOXML + 'styles+xml"/></Types>'],
+    ['_rels/.rels', XML_HEAD + '<Relationships xmlns="' + PKG + '"><Relationship Id="rId1" Type="' + REL + '/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+    ['xl/workbook.xml', XML_HEAD + '<workbook xmlns="' + MAIN + '" xmlns:r="' + REL + '"><sheets><sheet name="Tax Invoice" sheetId="1" r:id="rId1"/></sheets></workbook>'],
+    ['xl/_rels/workbook.xml.rels', XML_HEAD + '<Relationships xmlns="' + PKG + '">' +
+      '<Relationship Id="rId1" Type="' + REL + '/worksheet" Target="worksheets/sheet1.xml"/>' +
+      '<Relationship Id="rId2" Type="' + REL + '/styles" Target="styles.xml"/></Relationships>'],
+    ['xl/worksheets/sheet1.xml', sheet],
+    ['xl/styles.xml', styles]
+  ], OOXML + 'sheet');
+}
+// A minimal ZIP writer with no compression, which is all an .xlsx needs.
+const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+function crc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (const b of bytes) c = CRC_TABLE[(c ^ b) & 255] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function zipFiles(files, type) {
+  const enc = new TextEncoder();
+  const local = [], central = [];
+  let offset = 0;
+  files.forEach(([name, content]) => {
+    const path = enc.encode(name), data = enc.encode(content), crc = crc32(data);
+    // Fields shared by both headers, from "version needed": version 2.0, no flags, stored, dated 1 Jan 1980, sizes and name length.
+    const common = (v, at) => {
+      v.setUint16(at, 20, true); v.setUint16(at + 8, 0x21, true); v.setUint32(at + 10, crc, true);
+      v.setUint32(at + 14, data.length, true); v.setUint32(at + 18, data.length, true); v.setUint16(at + 22, path.length, true);
+    };
+    const head = new DataView(new ArrayBuffer(30));
+    head.setUint32(0, 0x04034b50, true);
+    common(head, 4);
+    local.push(head, path, data);
+    const entry = new DataView(new ArrayBuffer(46));
+    entry.setUint32(0, 0x02014b50, true);
+    entry.setUint16(4, 20, true);
+    common(entry, 6);
+    entry.setUint32(42, offset, true);
+    central.push(entry, path);
+    offset += 30 + path.length + data.length;
+  });
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, files.length, true);
+  end.setUint16(10, files.length, true);
+  end.setUint32(12, central.reduce((n, part) => n + part.byteLength, 0), true);
+  end.setUint32(16, offset, true);
+  return new Blob(local.concat(central, [end]), { type });
+}
+// A normal download into the browser's download folder: no Save As window or permission prompt.
+function downloadExcel() {
+  const inv = currentInvoice();
+  const url = URL.createObjectURL(buildExcel(inv));
   const a = document.createElement('a');
-  a.href = url; a.download = fileBase(inv) + '.xls';
+  a.href = url; a.download = fileBase(inv) + '.xlsx';
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
   toast('Downloaded ' + a.download);

@@ -69,7 +69,7 @@ The server uses local MongoDB at `mongodb://127.0.0.1:27017`, database `gst_invo
 ### Preview and downloads
 - **Status:** Draft, Unpaid or Paid.
 - **PDF:** choose **Save as PDF** in the print window, then pick a folder. The invoice is made for A4 only. It fills one page, or continues onto more pages if it is long, and the preview shows the same A4 sheet. There is 30 mm of clear space above **Authorised Signatory** for a seal and signature. Browser date, title and web address lines do not print.
-- **Excel:** Chrome and Edge ask where to save. Other browsers follow their own download setting. Excel may show a file format warning when opening the file; click **Yes** to open it.
+- **Excel:** saves a `.xlsx` file straight to the browser's download folder, with no Save As window. It uses the same layout as the business's own Excel invoice and prints on one A4 page.
 
 ### Settings
 - Theme (Light, Dark or System). Printing always uses light colours.
@@ -108,7 +108,7 @@ Saving a PDF of every invoice is still a good extra copy.
 ## Known issues
 
 - **GST rates:** the options are 5, 12, 18 and 28%. Check them against current GST notifications, because 40%, 3% and 0% are not available.
-- **Excel export:** it has no signature block and contains fixed values, not formulas. The file is XML saved as `.xls`, which causes the warning above.
+- **Excel export:** it contains fixed values, not formulas.
 - **Rounding:** tax can be off by one paisa in rare exact half-paisa cases. Rounding to the rupee usually hides this.
 - **Resuming old edits:** resuming an unsaved edit can overwrite a status changed since then, and saving it can bring back a deleted invoice.
 - **Year and date:** changing the year updates only the number, so set the Invoice Date separately. Changing the year while editing a saved invoice gives it a new number.

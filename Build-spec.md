@@ -212,9 +212,12 @@ Uses the browser's print window, with these print rules:
 - Suggested file name: the invoice number with `/` replaced by `-`.
 
 ### Excel
-- SpreadsheetML (XML) with an `.xls` extension and one sheet named `Tax Invoice`.
-- Chrome and Edge use a Save window. Other browsers use a normal download.
-- Contains fixed values, with no formulas or signature block.
+- A real Office Open XML `.xlsx` workbook with one sheet named `Tax Invoice`, zipped in the browser with no library (stored, no compression).
+- Layout follows the business's own Excel invoice: seven columns (34, 100, 179, 65, 80, 80 and 114.5 pt; the original 279 pt Particulars column is split so bank labels and colons line up), Calibri, medium box borders, no gridlines. From top: seller header with phone numbers at the right; `To.` client block beside ruled INVOICE NO, D.C and P.O lines and the place-of-supply state; items table (SI NO, PARTICULARS, HSN/SAC, Quantity, Rate (Rs.), AMOUNTS (Rs)); BANK DETAILS beside the TOTAL, CGST, SGST, IGST, Rounded off and GRAND TOTAL boxes in `Rs.` format; amount chargeable in words; notes if present; `For <business>` and `Authorised signatory`.
+- CGST, SGST and IGST rows always appear; the ones that do not apply are left blank.
+- Page setup: A4, 0.4 inch margins, centred, and fitted to one page wide. Empty item rows fill a short invoice to one page; long invoices continue onto more pages.
+- A normal download into the browser's download folder, with no Save As window or permission prompt.
+- Contains fixed values, with no formulas.
 
 ## 9. Offline behaviour
 
@@ -245,7 +248,7 @@ Uses the browser's print window, with these print rules:
 - [ ] The preview matches the printed A4 page, with 30 mm of clear space above `Authorised Signatory`.
 - [ ] Printing in dark mode has no black margins.
 - [ ] A 45-item invoice continues onto a second page with repeated headings.
-- [ ] Excel asks for a save location in Chrome or Edge, and the file opens correctly.
+- [ ] Excel downloads as `.xlsx` without a prompt, opens without a warning, and prints on one A4 page.
 - [ ] On first connection, invoices already in the browser appear in MongoDB.
 - [ ] Saving, changing status and deleting update MongoDB, and the badge shows `MongoDB ✓`.
 - [ ] With the server stopped, a save shows `MongoDB ✕` and reaches MongoDB after the server restarts and the app is reloaded.
@@ -257,7 +260,6 @@ Uses the browser's print window, with these print rules:
 - Each save sends the whole list for that key.
 - Edits made in Compass while the app is open are overwritten by the app's next save.
 - GST rates are fixed in the code and need checking against current notifications.
-- The Excel export has no signature block, and opening it can show a format warning.
 - Tax can be off by one paisa in rare exact half-paisa cases.
 - Resuming an old unsaved edit can overwrite a newer status or bring back a deleted invoice.
 - Financial Month is stored but has no effect.
@@ -269,4 +271,3 @@ Uses the browser's print window, with these print rules:
 
 1. Backup and Restore buttons.
 2. A review of the GST rate list.
-3. A signature block in the Excel export.
