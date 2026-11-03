@@ -1,0 +1,17 @@
+{
+  "name": "gst-invoice-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "GST Tax Invoice generator that saves its data in MongoDB.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "dependencies": {
+    "mongodb": "7.7.0"
+  }
+}

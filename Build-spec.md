@@ -6,18 +6,18 @@ This document describes the app as currently built, so it can be maintained or r
 
 A single-user app for creating Indian GST Tax Invoices on one computer.
 
-**Included:** invoice creation and editing, automatic numbering, saved profiles, filtering and totals, PDF and Excel output, and offline use.
+**Included:** invoice creation and editing, automatic numbering, saved profiles, filtering and totals, PDF and Excel output, saving to a local MongoDB, and offline use.
 
-**Not included:** login, online storage or sync, backup and restore, part payments, credit notes, and e-invoicing.
+**Not included:** login, online storage, multi-device sync, backup and restore buttons, part payments, credit notes, and e-invoicing.
 
 ## 2. Technical design
 
 | Area | Decision |
 |---|---|
 | Stack | Plain HTML, CSS and JavaScript in one file, with no framework or build step |
-| Storage | Browser `localStorage`, saved as JSON |
+| Storage | MongoDB (master copy) through `server.js`, with a working copy in browser `localStorage` |
 | Navigation | Hash-based routes |
-| Hosting | Any static file server; locally `python -m http.server 8081 --bind 127.0.0.1` |
+| Server | `server.js` on Node.js 20.19+, using the official `mongodb` driver; started with `npm start` on `127.0.0.1:8081` |
 | Offline | Service worker, active only over HTTP or HTTPS (not `file://`) |
 | Fonts | Inter and JetBrains Mono from Google Fonts, with system fallbacks |
 
@@ -26,13 +26,16 @@ A single-user app for creating Indian GST Tax Invoices on one computer.
 | File | Role |
 |---|---|
 | `invoice-app.html` | All pages, styling and logic |
+| `server.js` | Serves the app files and the MongoDB API |
+| `package.json` | Server dependency (`mongodb`) and `npm start` |
+| `.env.example` | Example settings; a private `.env` overrides them |
 | `sw.js` | Offline caching |
 | `manifest.webmanifest` | Install metadata |
 | `icon-192.png`, `icon-512.png` | App icons |
 | `README.md` | User guide |
 | `Build-spec.md` | This specification |
 
-The app needs no other files. Do not add real invoices or spreadsheets to this folder, because a server or repository could expose them.
+The server serves only the app files listed above, never `.env` or `node_modules`. Do not add real invoices or spreadsheets to this folder, because a server or repository could expose them.
 
 ## 3. Routes
 
@@ -54,7 +57,35 @@ The app needs no other files. Do not add real invoices or spreadsheets to this f
 | `gst.clients` | Array | Client profiles |
 | `gst.businesses` | Array | Business profiles, including bank details |
 | `gst.settings` | Object | `seller`, `bank`, `notes`, `theme`, `financialYears`, `activeFy` |
-| `gst.wip` | Object | `{ key, inv }`: the one invoice with unsaved changes |
+| `gst.wip` | Object | `{ key, inv }`: the one invoice with unsaved changes; never sent to MongoDB |
+| `gst.unsynced` | Array | Storage keys changed but not yet saved in MongoDB |
+
+### MongoDB
+
+Database `gst_invoice` (setting `MONGODB_DB`) at `mongodb://127.0.0.1:27017` (setting `MONGODB_URI`).
+
+| Collection | From key | Documents |
+|---|---|---|
+| `invoices` | `gst.invoices` | One per invoice, `_id` = the invoice `id`; unique index on `number` |
+| `clients` | `gst.clients` | One per profile, `_id` = the profile `id` |
+| `businesses` | `gst.businesses` | One per profile, `_id` = the profile `id` |
+| `settings` | `gst.settings` | One document with `_id` = `settings` |
+
+### API
+
+| Request | Effect |
+|---|---|
+| `GET /api/data` | Returns `{ invoices, clients, businesses, settings }` |
+| `PUT /api/invoices`, `/api/clients`, `/api/businesses` | Replaces the collection with the JSON array sent |
+| `PUT /api/settings` | Replaces the settings document |
+
+API requests are accepted only with the host `127.0.0.1:8081` or `localhost:8081`, and only from that origin.
+
+### Sync rules
+- Every `store()` of a synced key writes `localStorage`, adds the key to `gst.unsynced`, and queues a PUT. PUTs run one at a time.
+- A key leaves `gst.unsynced` only when the copy sent is still the current one.
+- On startup the app reads `/api/data` before showing a page. Each key not in `gst.unsynced` takes MongoDB's copy; when MongoDB's copy is empty, the browser copy is sent instead, which copies existing invoices across on first use.
+- If the server cannot be reached, the app works from `localStorage` and retries on the next change, reload or window focus. A badge in the top bar shows the state.
 
 ### Invoice fields
 
@@ -189,15 +220,17 @@ Uses the browser's print window, with these print rules:
 
 - The service worker pre-caches the app page, manifest and icons.
 - Page loads try the network first, and use the cached copy when offline.
+- `/api/` requests are never cached.
 - Other requests, including fonts, use the cache first and are cached on first use.
 - When cached files need refreshing, change the `CACHE` version in `sw.js`.
 
 ## 10. Security and privacy
 
-- Data stays in the browser, and the app sends no invoice data anywhere. Google Fonts is the only external request.
+- Data stays on this computer, in the browser and the local MongoDB. Google Fonts is the only external request.
 - User text is escaped before being placed in the page or Excel file.
-- Data in `localStorage` is not encrypted, so it relies on the protection of the Windows account.
-- Bind the local server to `127.0.0.1`.
+- Data in `localStorage` and MongoDB is not encrypted, so it relies on the protection of the Windows account.
+- The server listens only on `127.0.0.1`, and the API rejects other hosts and origins.
+- `.env` can hold a database password; it is in `.gitignore` and never served.
 - Do not publish real invoices, spreadsheets or exports.
 
 ## 11. Test checklist
@@ -213,10 +246,16 @@ Uses the browser's print window, with these print rules:
 - [ ] Printing in dark mode has no black margins.
 - [ ] A 45-item invoice continues onto a second page with repeated headings.
 - [ ] Excel asks for a save location in Chrome or Edge, and the file opens correctly.
+- [ ] On first connection, invoices already in the browser appear in MongoDB.
+- [ ] Saving, changing status and deleting update MongoDB, and the badge shows `MongoDB ✓`.
+- [ ] With the server stopped, a save shows `MongoDB ✕` and reaches MongoDB after the server restarts and the app is reloaded.
+- [ ] After clearing browser data, the app loads every invoice from MongoDB.
 
 ## 12. Known limitations
 
-- There is no backup or restore, so clearing browser data can lose everything.
+- MongoDB is on the same disk, so it needs regular exports or `mongodump` copies elsewhere. The app has no backup buttons.
+- Each save sends the whole list for that key.
+- Edits made in Compass while the app is open are overwritten by the app's next save.
 - GST rates are fixed in the code and need checking against current notifications.
 - The Excel export has no signature block, and opening it can show a format warning.
 - Tax can be off by one paisa in rare exact half-paisa cases.
@@ -228,6 +267,6 @@ Uses the browser's print window, with these print rules:
 
 ## 13. Planned work
 
-1. Automatic saving to a chosen local folder, with Backup and Restore buttons.
+1. Backup and Restore buttons.
 2. A review of the GST rate list.
 3. A signature block in the Excel export.

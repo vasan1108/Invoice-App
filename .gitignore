@@ -3,3 +3,7 @@
 *.xls
 *.csv
 *.pdf
+
+# Server files
+node_modules/
+.env

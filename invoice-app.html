@@ -41,6 +41,8 @@ h1, h2 { margin: 0; line-height: 1.2; }
 .brand b { color: var(--accent); }
 .nav { padding: 8px 12px; border-radius: 8px; text-decoration: none; color: var(--muted); font-weight: 500; }
 .nav.on { color: var(--text); background: var(--surface-2); }
+.db-state { padding: 2px 8px; margin-right: 4px; border: 1px solid currentColor; border-radius: 99px; font-size: 12px; font-weight: 600; color: var(--paid); white-space: nowrap; cursor: help; }
+.db-state.off { color: var(--danger); }
 main { max-width: 1120px; margin: 0 auto; padding: 20px 16px 48px; }
 .page-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
 .page-head h1 { font-size: 22px; letter-spacing: -.02em; }
@@ -226,6 +228,7 @@ input[type="checkbox"] { width: 18px; min-height: 18px; height: 18px; margin: 0;
 <body>
 <header class="topbar no-print">
   <a class="brand" href="#/">GST <b>Invoice</b></a>
+  <span class="db-state" id="db-state" role="status" hidden></span>
   <a class="nav" data-nav="home" href="#/">Invoices</a>
   <a class="nav" data-nav="settings" href="#/settings">Settings</a>
 </header>
@@ -235,7 +238,9 @@ input[type="checkbox"] { width: 18px; min-height: 18px; height: 18px; margin: 0;
 
 <script>
 'use strict';
-const KEYS = { invoices: 'gst.invoices', clients: 'gst.clients', businesses: 'gst.businesses', settings: 'gst.settings', wip: 'gst.wip' };
+const KEYS = { invoices: 'gst.invoices', clients: 'gst.clients', businesses: 'gst.businesses', settings: 'gst.settings', wip: 'gst.wip', unsynced: 'gst.unsynced' };
+// Keys copied to the MongoDB collection of the same name; gst.wip stays in this browser only.
+const SYNCED = { [KEYS.invoices]: 'invoices', [KEYS.clients]: 'clients', [KEYS.businesses]: 'businesses', [KEYS.settings]: 'settings' };
 const STATES = [['Jammu & Kashmir','01'],['Himachal Pradesh','02'],['Punjab','03'],['Chandigarh','04'],['Uttarakhand','05'],['Haryana','06'],['Delhi','07'],['Rajasthan','08'],['Uttar Pradesh','09'],['Bihar','10'],['Sikkim','11'],['Arunachal Pradesh','12'],['Nagaland','13'],['Manipur','14'],['Mizoram','15'],['Tripura','16'],['Meghalaya','17'],['Assam','18'],['West Bengal','19'],['Jharkhand','20'],['Odisha','21'],['Chhattisgarh','22'],['Madhya Pradesh','23'],['Gujarat','24'],['Dadra & Nagar Haveli and Daman & Diu','26'],['Maharashtra','27'],['Karnataka','29'],['Goa','30'],['Lakshadweep','31'],['Kerala','32'],['Tamil Nadu','33'],['Puducherry','34'],['Andaman & Nicobar Islands','35'],['Telangana','36'],['Andhra Pradesh','37'],['Ladakh','38']];
 const DEFAULT_STATE = 'Tamil Nadu / 33';
 const GST_RATES = ['5', '12', '18', '28'];
@@ -259,8 +264,70 @@ function load(key, fallback) {
   catch (e) { return fallback; }
 }
 function store(key, value) {
-  try { localStorage.setItem(key, JSON.stringify(value)); return true; }
+  try { localStorage.setItem(key, JSON.stringify(value)); }
   catch (e) { toast('Could not save: browser storage is full or blocked.'); return false; }
+  if (SYNCED[key]) { setUnsynced([...new Set(unsynced().concat(key))]); queueSync(); }
+  return true;
+}
+
+/* ---------- MongoDB sync ---------- */
+// The browser copy is used for every screen; each change is also sent to the server, which saves it in MongoDB.
+// Keys changed but not yet saved there are listed in gst.unsynced and sent again on the next change or reload.
+let syncQueue = Promise.resolve();
+let dbOnline = false;
+const unsynced = () => load(KEYS.unsynced, []);
+function setUnsynced(list) { try { localStorage.setItem(KEYS.unsynced, JSON.stringify(list)); } catch (e) { /* retried on the next change */ } }
+// One request at a time, so an older copy can never arrive after a newer one.
+function queueSync() {
+  syncQueue = syncQueue.then(pushUnsynced);
+  return syncQueue;
+}
+async function pushUnsynced() {
+  for (const key of unsynced()) {
+    const body = localStorage.getItem(key);
+    try {
+      const res = await fetch('api/' + SYNCED[key], { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: body, signal: AbortSignal.timeout(15000) });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Server error ' + res.status);
+    } catch (e) {
+      setDbState(false, e.message);
+      return;
+    }
+    // A change made while this request was running stays listed and is sent next.
+    if (localStorage.getItem(key) === body) setUnsynced(unsynced().filter(k => k !== key));
+  }
+  setDbState(true);
+}
+// On startup MongoDB is the master copy, except for changes this browser has not sent yet.
+// The first time, when a collection is empty, this browser's invoices are copied into MongoDB.
+async function connectDb() {
+  let data;
+  try {
+    const res = await fetch('api/data', { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error('Server error ' + res.status);
+    data = await res.json();
+  } catch (e) {
+    setDbState(false, 'The MongoDB server is not running.');
+    return;
+  }
+  const pending = unsynced();
+  Object.entries(SYNCED).forEach(([key, name]) => {
+    if (pending.includes(key)) return;
+    const remote = data[name];
+    const hasRemote = Array.isArray(remote) ? remote.length > 0 : remote != null;
+    if (hasRemote) { try { localStorage.setItem(key, JSON.stringify(remote)); } catch (e) { /* the browser copy stays as it was */ } }
+    else if (localStorage.getItem(key) !== null) pending.push(key);
+  });
+  setUnsynced(pending);
+  await queueSync();
+}
+function setDbState(ok, error) {
+  const el = document.getElementById('db-state');
+  if (!ok && dbOnline) toast('MongoDB is not reachable. Changes are kept in this browser and sent later.');
+  dbOnline = ok;
+  el.hidden = false;
+  el.classList.toggle('off', !ok);
+  el.textContent = ok ? 'MongoDB ✓' : 'MongoDB ✕';
+  el.title = ok ? 'All changes are saved in MongoDB.' : 'Not saved in MongoDB: ' + (error || 'unknown error') + ' Changes are kept in this browser and sent when the server is reachable.';
 }
 const invoices = () => load(KEYS.invoices, []);
 const settings = () => load(KEYS.settings, {});
@@ -543,7 +610,8 @@ function refreshEditor() {
   document.getElementById('sum-grand').textContent = '₹' + money(c.grand);
   document.getElementById('sum-words').textContent = amountWords(c.grand);
   document.getElementById('gst-rate').disabled = form.gstType === 'exempt';
-  document.querySelector('[data-fy]').value = numberFy(form.number) || '';  const roundInput = document.querySelector('[data-path="roundOff"]');
+  document.querySelector('[data-fy]').value = numberFy(form.number) || '';
+  const roundInput = document.querySelector('[data-path="roundOff"]');
   roundInput.readOnly = !!form.roundAuto;
   if (form.roundAuto) roundInput.value = c.roundOff.toFixed(2);
 
@@ -764,7 +832,8 @@ function buildExcel(inv) {
   pair('Amount in words', amountWords(c.grand));
   add(xlRow());
   add(xlWide('Bank Details', 'section'));
-  pair('Company Name', k.company || s.name); pair('Bank Name', k.name); pair('Branch', k.branch); pair('Account No', k.account); pair('IFSC Code', (k.ifsc || '').toUpperCase());  if (inv.notes && inv.notes.trim()) { add(xlRow()); pair('Notes / Terms', inv.notes); }
+  pair('Company Name', k.company || s.name); pair('Bank Name', k.name); pair('Branch', k.branch); pair('Account No', k.account); pair('IFSC Code', (k.ifsc || '').toUpperCase());
+  if (inv.notes && inv.notes.trim()) { add(xlRow()); pair('Notes / Terms', inv.notes); }
   const sides = (...list) => '<Borders>' + list.map(p => '<Border ss:Position="' + p + '" ss:LineStyle="Continuous" ss:Weight="1"/>').join('') + '</Borders>';
   const border = sides('Left', 'Right', 'Top', 'Bottom');
   const centre = '<Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/>';
@@ -1015,8 +1084,10 @@ window.addEventListener('beforeinstallprompt', e => {
 });
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
 document.getElementById('states').innerHTML = STATES.map(([n, c]) => '<option value="' + esc(n + ' / ' + c) + '">').join('');
+window.addEventListener('focus', () => { if (unsynced().length) queueSync(); });
 applyTheme();
-route();
+// The theme is applied again because MongoDB may hold newer settings than this browser.
+connectDb().then(() => { applyTheme(); route(); });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }

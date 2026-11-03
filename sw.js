@@ -1,4 +1,4 @@
-const CACHE = 'gst-invoice-v5';
+const CACHE = 'gst-invoice-v6';
 const PAGE = './invoice-app.html';
 const SHELL = [PAGE, './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
@@ -14,7 +14,8 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   const req = e.request;
-  if (req.method !== 'GET' || !req.url.startsWith('http')) return;
+  // MongoDB data always comes from the server, never from the cache.
+  if (req.method !== 'GET' || !req.url.startsWith('http') || new URL(req.url).pathname.includes('/api/')) return;
 
   // Pages: newest copy when online, cached copy when offline.
   if (req.mode === 'navigate') {
